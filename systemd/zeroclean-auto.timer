@@ -1,0 +1,11 @@
+[Unit]
+Description=ZeroClean — Periodic Background Sentinel Timer
+Documentation=https://github.com/fabio-linhares/zero-clean
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

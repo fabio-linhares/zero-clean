@@ -1,0 +1,632 @@
+#!/usr/bin/env python3
+"""
+ZeroClean — Smart, Safe & Didactic Linux System Hygiene and Memory Optimizer.
+Part of the Zero ecosystem.
+
+License: MIT
+Author: Fábio Linhares & Contributors
+"""
+
+import sys
+import os
+import time
+import json
+import argparse
+import platform
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+
+# =====================================================================
+# Dual-Mode Rendering (Rich UI with pure ANSI fallback)
+# =====================================================================
+
+HAS_RICH = False
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.prompt import Prompt
+    from rich import box
+    console = Console()
+    HAS_RICH = True
+except ImportError:
+    class SimpleConsole:
+        def print(self, *args, **kwargs):
+            text = " ".join(str(a) for a in args)
+            # Remove basic rich tags for plain output
+            clean = text
+            for tag in ["[bold cyan]", "[bold yellow]", "[bold green]", "[bold red]", 
+                        "[bold magenta]", "[bold]", "[/]", "[dim]", "[green]", "[yellow]", "[red]"]:
+                clean = clean.replace(tag, "")
+            print(clean)
+        def clear(self):
+            os.system("clear" if os.name == "posix" else "cls")
+    console = SimpleConsole()
+
+
+# =====================================================================
+# Telemetry & Health Evaluation Engine
+# =====================================================================
+
+class HealthEvaluator:
+    """Evaluates kernel metrics, pressure stall information (PSI) and uptime."""
+
+    CACHE_DIR = Path.home() / ".cache" / "zeroclean"
+    LAST_RUN_FILE = CACHE_DIR / "last_run"
+
+    @classmethod
+    def get_uptime(cls) -> Tuple[float, str]:
+        try:
+            with open("/proc/uptime", "r") as f:
+                uptime_sec = float(f.readline().split()[0])
+            hours = int(uptime_sec // 3600)
+            minutes = int((uptime_sec % 3600) // 60)
+            if hours > 0:
+                return uptime_sec, f"{hours}h {minutes}min"
+            return uptime_sec, f"{minutes} min"
+        except Exception:
+            return 0.0, "N/A"
+
+    @classmethod
+    def get_memory_info(cls) -> Dict[str, Any]:
+        info = {
+            "total_bytes": 0,
+            "available_bytes": 0,
+            "avail_pct": 0.0,
+            "avail_gb": 0.0
+        }
+        try:
+            with open("/proc/meminfo", "r") as f:
+                data = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        k = parts[0].strip()
+                        v = parts[1].strip().split()[0]
+                        if v.isdigit():
+                            data[k] = int(v) * 1024
+            total = data.get("MemTotal", 1)
+            avail = data.get("MemAvailable", 0)
+            info["total_bytes"] = total
+            info["available_bytes"] = avail
+            info["avail_pct"] = (avail / total) * 100.0
+            info["avail_gb"] = avail / (1024 ** 3)
+        except Exception:
+            pass
+        return info
+
+    @classmethod
+    def get_zram_info(cls) -> Dict[str, Any]:
+        info = {"present": False, "orig_bytes": 0, "used_bytes": 0, "ratio": 1.0}
+        mm_stat = Path("/sys/block/zram0/mm_stat")
+        if mm_stat.is_file():
+            try:
+                with open(mm_stat, "r") as f:
+                    parts = f.readline().split()
+                    if len(parts) >= 3:
+                        orig = int(parts[0])
+                        compr = int(parts[1])
+                        mem_used = int(parts[2])
+                        ratio = (orig / compr) if compr > 0 else 1.0
+                        info = {
+                            "present": True,
+                            "orig_bytes": orig,
+                            "used_bytes": mem_used,
+                            "ratio": ratio
+                        }
+            except Exception:
+                pass
+        return info
+
+    @classmethod
+    def get_cooldown_status(cls, cooldown_minutes: int = 20) -> Tuple[bool, int]:
+        cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if not cls.LAST_RUN_FILE.is_file():
+            return False, 0
+        try:
+            mtime = cls.LAST_RUN_FILE.stat().st_mtime
+            elapsed = (time.time() - mtime) / 60.0
+            if elapsed < cooldown_minutes:
+                remaining = int(cooldown_minutes - elapsed)
+                return True, max(1, remaining)
+        except Exception:
+            pass
+        return False, 0
+
+    @classmethod
+    def mark_run(cls):
+        try:
+            cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cls.LAST_RUN_FILE.write_text(str(int(time.time())))
+        except Exception:
+            pass
+
+    @classmethod
+    def get_sentinel_status(cls) -> str:
+        # Check systemd user timer
+        try:
+            p = subprocess.run(["systemctl", "--user", "is-active", "zeroclean-auto.timer"], 
+                               capture_output=True, text=True, timeout=1)
+            if p.stdout.strip() == "active":
+                return "Active (every 30 min in user background)"
+            p2 = subprocess.run(["systemctl", "--user", "is-active", "zero-boost-auto.timer"], 
+                                capture_output=True, text=True, timeout=1)
+            if p2.stdout.strip() == "active":
+                return "Active (every 30 min in user background)"
+        except Exception:
+            pass
+        return "Inactive (manual run only)"
+
+    @classmethod
+    def evaluate(cls) -> Dict[str, Any]:
+        uptime_sec, uptime_str = cls.get_uptime()
+        mem = cls.get_memory_info()
+        zram = cls.get_zram_info()
+        in_cooldown, remaining_cd = cls.get_cooldown_status(20)
+        sentinel_str = cls.get_sentinel_status()
+
+        # Check for zboost engine if installed
+        zboost_candidate_count = 0
+        zboost_auto_triggered = False
+        zboost_reason = ""
+        zboost_path = subprocess.run(["which", "zboost"], capture_output=True, text=True).stdout.strip()
+        if zboost_path and os.path.exists(zboost_path):
+            try:
+                p = subprocess.run([zboost_path, "auto", "--dry-run", "--json"], 
+                                   capture_output=True, text=True, timeout=2)
+                if p.returncode == 0:
+                    d = json.loads(p.stdout)
+                    zboost_auto_triggered = d.get("auto_triggered", False)
+                    zboost_reason = d.get("auto_reason", "")
+                    zboost_candidate_count = d.get("reclaim", {}).get("candidates_eligible", 0)
+            except Exception:
+                pass
+
+        # Decision Tree for Health Status
+        if uptime_sec < 600:
+            level = "GREEN"
+            badge = "🟢 SYSTEM HEALTHY & RECENTLY BOOTED"
+            border = "green"
+            diagnostic = f"System booted recently ({uptime_str}). Clean cache and minimal memory fragmentation."
+            recommendation = "No cleaning needed right now. Enjoy your workflow!"
+        elif in_cooldown:
+            level = "GREEN"
+            badge = "🟢 SYSTEM HEALTHY & OPTIMIZED"
+            border = "green"
+            diagnostic = f"Optimization executed recently. Operational cooldown active (~{remaining_cd} min left)."
+            recommendation = "No cleaning needed right now. System is running at nominal performance."
+        elif zboost_path and not zboost_auto_triggered:
+            level = "GREEN"
+            badge = "🟢 SYSTEM HEALTHY & NOMINAL"
+            border = "green"
+            diagnostic = zboost_reason or "All performance counters are within nominal thresholds."
+            recommendation = "No cleaning needed right now."
+        elif mem["avail_pct"] < 20.0:
+            level = "RED"
+            badge = "🔴 HIGH RESOURCE PRESSURE DETECTED"
+            border = "red"
+            diagnostic = f"Low available memory ({mem['avail_pct']:.1f}% free / {mem['avail_gb']:.1f} GB)."
+            recommendation = "Full System Cleanup recommended (Option [3] or 'sudo zeroclean full')."
+        elif zboost_candidate_count > 25 or mem["avail_pct"] < 40.0:
+            level = "YELLOW"
+            badge = "🟡 OPTIMIZATION OPPORTUNITY DETECTED"
+            border = "yellow"
+            diagnostic = zboost_reason or f"Idle background tasks detected ({zboost_candidate_count} candidates)."
+            recommendation = "Partial User Cleanup recommended (Option [2] or 'zeroclean partial')."
+        else:
+            level = "GREEN"
+            badge = "🟢 SYSTEM HEALTHY & STABLE"
+            border = "green"
+            diagnostic = f"Healthy memory allocation ({mem['avail_pct']:.1f}% available). Uptime: {uptime_str}."
+            recommendation = "No immediate action required."
+
+        return {
+            "level": level,
+            "badge": badge,
+            "border": border,
+            "diagnostic": diagnostic,
+            "recommendation": recommendation,
+            "uptime": uptime_str,
+            "avail_pct": f"{mem['avail_pct']:.1f}%",
+            "avail_gb": f"{mem['avail_gb']:.1f} GB",
+            "zram": zram,
+            "sentinel": sentinel_str,
+            "has_zboost": bool(zboost_path)
+        }
+
+
+# =====================================================================
+# System Hygiene Executor
+# =====================================================================
+
+class SystemHygiene:
+    """Executes multi-distribution cleaning and safe temp file traversal."""
+
+    @staticmethod
+    def get_package_managers() -> Dict[str, str]:
+        mgrs = {}
+        if os.path.exists("/usr/bin/apt"):
+            mgrs["apt"] = "sudo apt clean && sudo apt autoremove -y"
+        if os.path.exists("/usr/bin/dnf"):
+            mgrs["dnf"] = "sudo dnf clean all"
+        if os.path.exists("/usr/bin/pacman"):
+            mgrs["pacman"] = "sudo pacman -Sc --noconfirm"
+        if os.path.exists("/usr/bin/zypper"):
+            mgrs["zypper"] = "sudo zypper clean --all"
+        if os.path.exists("/usr/bin/flatpak"):
+            mgrs["flatpak"] = "flatpak uninstall --unused -y 2>/dev/null || true"
+        return mgrs
+
+    @staticmethod
+    def get_open_fds() -> set:
+        """Indexes open file descriptors from /proc/*/fd to ensure zero corruption."""
+        open_inodes = set()
+        proc = Path("/proc")
+        for pid_dir in proc.iterdir():
+            if not pid_dir.is_dir() or not pid_dir.name.isdigit():
+                continue
+            fd_dir = pid_dir / "fd"
+            try:
+                for fd in fd_dir.iterdir():
+                    try:
+                        st = fd.stat()
+                        open_inodes.add(st.st_ino)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return open_inodes
+
+    @classmethod
+    def clean_user_temps(cls, dry_run: bool = False, min_age_hours: int = 24) -> Tuple[int, int]:
+        """Safely cleans expired temporary files preserving all open files and sockets."""
+        now = time.time()
+        cutoff = now - (min_age_hours * 3600)
+        open_inodes = cls.get_open_fds()
+
+        target_dirs = [Path.home() / ".cache", Path("/tmp"), Path("/var/tmp")]
+        freed_bytes = 0
+        removed_count = 0
+
+        for tdir in target_dirs:
+            if not tdir.exists():
+                continue
+            for root, dirs, files in os.walk(tdir, topdown=False):
+                for f in files:
+                    fpath = Path(root) / f
+                    try:
+                        st = fpath.lstat()
+                        # Never delete open files or sockets
+                        if st.st_ino in open_inodes:
+                            continue
+                        if st.st_mtime < cutoff:
+                            size = st.st_size
+                            if not dry_run:
+                                fpath.unlink(missing_ok=True)
+                            freed_bytes += size
+                            removed_count += 1
+                    except Exception:
+                        continue
+        return removed_count, freed_bytes
+
+
+# =====================================================================
+# CLI and TUI Interface
+# =====================================================================
+
+class ZeroCleanCLI:
+    """Interactive TUI and Direct CLI runner with Passive Pedagogy."""
+
+    @classmethod
+    def print_interactive_banner(cls, action_name: str, canonical_cmd: str):
+        console.clear()
+        if HAS_RICH:
+            console.print(Panel(
+                f"[bold cyan]{action_name}[/]\n\n"
+                f"Canonical Command: [bold yellow]{canonical_cmd}[/]\n"
+                f"[dim]Executing...[/]",
+                title="🧹 ZeroClean — Execution",
+                box=box.ROUNDED
+            ))
+        else:
+            print("=================================================================")
+            print(f"  🧹 ZeroClean — {action_name}")
+            print(f"  Canonical Command: {canonical_cmd}")
+            print("=================================================================")
+
+    @classmethod
+    def post_action_message(cls, canonical_cmd: str):
+        console.print(f"\n[dim]Done! Remember: next time you can run directly:[/] [bold yellow]{canonical_cmd}[/]")
+        input("\nPress Enter to return to menu...")
+
+    @classmethod
+    def show_explain(cls):
+        console.clear()
+        if HAS_RICH:
+            table = Table(title="📖 ZeroClean Didactic Guide & Architecture", box=box.ROUNDED)
+            table.add_column("Option", justify="center", style="bold cyan", width=8)
+            table.add_column("CLI Command", style="bold yellow", width=34)
+            table.add_column("What it does & Safety Guarantees", style="white")
+
+            table.add_row(
+                "[1] Dry-Run",
+                "zeroclean -n",
+                "Simulates cleanup without deleting files or altering RAM. Computes exact bytes that would be freed."
+            )
+            table.add_row(
+                "[2] Partial",
+                "zeroclean partial",
+                "Non-root safe user cleanup. Scans user cache and temps, indexes open file descriptors via /proc to never delete locked files. Compresses idle RAM to ZRAM if zboost is present."
+            )
+            table.add_row(
+                "[3] Full",
+                "sudo zeroclean full",
+                "Deep system maintenance. Invokes kernel memory reclamation, zsmalloc compaction and system packages cleanup."
+            )
+            table.add_row(
+                "[4] Packages",
+                "zeroclean packages",
+                "Detects distro package manager (APT, DNF, Pacman, Zypper, Flatpak) and purges downloaded package caches and orphaned runtimes."
+            )
+            table.add_row(
+                "[5] Containers",
+                "zeroclean containers",
+                "Prunes dangling images, stopped containers, and unused volumes in Docker/Podman."
+            )
+            table.add_row(
+                "[6] Logs",
+                "sudo journalctl --vacuum-time=7d",
+                "Vacuums systemd journal keeping only the last 7 days of logs."
+            )
+            table.add_row(
+                "[S] Status",
+                "zeroclean status",
+                "Displays real-time memory telemetry, ZRAM compression ratio and background sentinel state."
+            )
+            console.print(table)
+        else:
+            print("=================================================================")
+            print("  📖 ZeroClean Didactic Guide & Architecture")
+            print("=================================================================")
+            print("  [1] zeroclean -n       : Safe dry-run simulation")
+            print("  [2] zeroclean partial  : User-level safe clean (no sudo required)")
+            print("  [3] sudo zeroclean full: Deep kernel & system cleanup")
+            print("  [4] zeroclean packages : Purge package caches (APT/DNF/Flatpak)")
+            print("  [5] zeroclean containers: Prune orphan Podman/Docker containers")
+            print("  [6] sudo journalctl --vacuum-time=7d : Vacuum systemd logs")
+            print("  [S] zeroclean status   : Telemetry and ZRAM status")
+        input("\nPress Enter to return...")
+
+    @classmethod
+    def interactive_menu(cls):
+        while True:
+            console.clear()
+            health = HealthEvaluator.evaluate()
+            pkg_mgrs = SystemHygiene.get_package_managers()
+            
+            pkg_name = " / ".join(k.upper() for k in pkg_mgrs.keys()) or "Packages"
+            pkg_cmd = " && ".join(pkg_mgrs.values()) if pkg_mgrs else "true"
+            pkg_canonical = f"sudo {list(pkg_mgrs.keys())[0]} clean" if pkg_mgrs else "zeroclean packages"
+
+            os_info = f"{platform.system()} ({platform.node()})"
+
+            if HAS_RICH:
+                header = Panel(
+                    Text("🧹 ZeroClean — Smart System Hygiene & Memory Optimizer", style="bold cyan"),
+                    subtitle=f"Host: {os_info} | Passive Pedagogy & Safety First",
+                    box=box.DOUBLE
+                )
+                console.print(header)
+
+                # Diagnostic Health Card
+                diag_panel = Panel(
+                    f"{health['badge']}\n\n"
+                    f"• [bold]Diagnostic:[/] {health['diagnostic']}\n"
+                    f"• [bold]Resources:[/] {health['avail_pct']} Free RAM ({health['avail_gb']}) | Uptime: {health['uptime']}\n"
+                    f"• [bold]Sentinel:[/] {health['sentinel']}\n"
+                    f"• [bold]Recommendation:[/] [bold]{health['recommendation']}[/]",
+                    title="🩺 Real-Time Necessity Assessment",
+                    box=box.ROUNDED,
+                    border_style=health['border']
+                )
+                console.print(diag_panel)
+
+                table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold magenta")
+                table.add_column("Option", justify="center", style="bold cyan", width=7)
+                table.add_column("Action & Scope", style="white", width=36)
+                table.add_column("Canonical Command (memorize)", style="bold yellow")
+                table.add_column("Privilege", justify="center", style="dim")
+
+                table.add_row("[1]", "🧪 Safe Simulation (Dry-Run)", "zeroclean -n", "[green]Safe[/]")
+                table.add_row("[2]", "🍃 Partial User Cleanup", "zeroclean partial", "[green]No Sudo[/]")
+                table.add_row("[3]", "🚀 Full System Cleanup", "sudo zeroclean full", "[yellow]Root / Deep[/]")
+                table.add_row("[4]", f"📦 Package Caches ({pkg_name})", pkg_canonical, "[yellow]Root[/]")
+                table.add_row("[5]", "🐳 Prune Containers (Docker/Podman)", "zeroclean containers", "[green]User[/]")
+                table.add_row("[6]", "📜 Vacuum System Logs (> 7 days)", "sudo journalctl --vacuum-time=7d", "[yellow]Root[/]")
+                table.add_row("[S]", "📊 Real-Time Diagnostic", "zeroclean status", "[green]Read-Only[/]")
+                table.add_row("[?]", "📖 Didactic Guide & Explanations", "zeroclean explain", "[cyan]Guide[/]")
+                table.add_row("[0]", "🚪 Exit", "exit", "[dim]Return[/]")
+
+                console.print(table)
+                choice = Prompt.ask("\n[bold yellow]Choose an action[/]", default="0").strip().lower()
+            else:
+                print("=================================================================")
+                print(f"  🧹 ZeroClean — System Hygiene ({os_info})")
+                print(f"  {health['badge']}")
+                print(f"  Diagnostic: {health['diagnostic']}")
+                print(f"  Resources: {health['avail_pct']} free ({health['avail_gb']}) | Uptime: {health['uptime']}")
+                print(f"  Sentinel: {health['sentinel']}")
+                print(f"  Recommendation: {health['recommendation']}")
+                print("=================================================================")
+                print("  [1] 🧪 Safe Simulation (Dry-Run)          ---> zeroclean -n")
+                print("  [2] 🍃 Partial User Cleanup               ---> zeroclean partial")
+                print("  [3] 🚀 Full System Cleanup                ---> sudo zeroclean full")
+                print(f"  [4] 📦 Package Caches ({pkg_name})        ---> {pkg_canonical}")
+                print("  [5] 🐳 Prune Containers (Docker/Podman)   ---> zeroclean containers")
+                print("  [6] 📜 Vacuum System Logs (> 7 days)       ---> sudo journalctl --vacuum-time=7d")
+                print("  [S] 📊 Real-Time Diagnostic                ---> zeroclean status")
+                print("  [?] 📖 Didactic Guide                      ---> zeroclean explain")
+                print("  [0] 🚪 Exit\n")
+                choice = input("Choose an action [0-6, S, ?]: ").strip().lower()
+
+            if choice in ("0", "q", "exit", "quit"):
+                break
+            elif choice == "1":
+                cls.print_interactive_banner("Safe Simulation (Dry-Run)", "zeroclean -n")
+                if health["has_zboost"]:
+                    subprocess.call(["zboost", "boost", "-n"])
+                else:
+                    count, bytes_f = SystemHygiene.clean_user_temps(dry_run=True)
+                    mb = bytes_f / (1024 * 1024)
+                    print(f"\n[Dry-Run Simulation] Would safely remove {count} expired files ({mb:.2f} MiB).")
+                cls.post_action_message("zeroclean -n")
+            elif choice == "2":
+                cls.print_interactive_banner("Partial User Cleanup", "zeroclean partial")
+                if health["has_zboost"]:
+                    subprocess.call("zboost disk && zboost ram", shell=True)
+                else:
+                    count, bytes_f = SystemHygiene.clean_user_temps(dry_run=False)
+                    mb = bytes_f / (1024 * 1024)
+                    print(f"\n[Done] Safely removed {count} expired temp files ({mb:.2f} MiB freed).")
+                HealthEvaluator.mark_run()
+                cls.post_action_message("zeroclean partial")
+            elif choice == "3":
+                confirm = input("\nFull cleanup requires administrator (sudo) privileges. Proceed? [y/N]: ").strip().lower()
+                if confirm in ("y", "yes", "s", "sim"):
+                    cls.print_interactive_banner("Full Deep System Cleanup", "sudo zeroclean full")
+                    if health["has_zboost"]:
+                        subprocess.call(["sudo", "zboost", "boost"])
+                    else:
+                        subprocess.call(pkg_cmd, shell=True)
+                        subprocess.call(["sudo", "journalctl", "--vacuum-time=7d"])
+                        count, bytes_f = SystemHygiene.clean_user_temps(dry_run=False)
+                        print(f"\n[Done] System cleanup complete.")
+                    HealthEvaluator.mark_run()
+                    cls.post_action_message("sudo zeroclean full")
+            elif choice == "4":
+                confirm = input(f"\nClean package manager caches ({pkg_canonical})? [y/N]: ").strip().lower()
+                if confirm in ("y", "yes", "s", "sim"):
+                    cls.print_interactive_banner(f"Package Cache Cleaning ({pkg_name})", pkg_canonical)
+                    subprocess.call(pkg_cmd, shell=True)
+                    cls.post_action_message(pkg_canonical)
+            elif choice == "5":
+                cls.print_interactive_banner("Container Pruning", "zeroclean containers")
+                cmd = "podman system prune -f 2>/dev/null || docker system prune -f 2>/dev/null || true"
+                subprocess.call(cmd, shell=True)
+                cls.post_action_message("zeroclean containers")
+            elif choice == "6":
+                confirm = input("\nVacuum system logs older than 7 days? [y/N]: ").strip().lower()
+                if confirm in ("y", "yes", "s", "sim"):
+                    cls.print_interactive_banner("Journal Log Vacuum", "sudo journalctl --vacuum-time=7d")
+                    subprocess.call(["sudo", "journalctl", "--vacuum-time=7d"])
+                    cls.post_action_message("sudo journalctl --vacuum-time=7d")
+            elif choice in ("s", "status"):
+                cls.print_interactive_banner("Real-Time Telemetry Diagnostic", "zeroclean status")
+                if health["has_zboost"]:
+                    subprocess.call(["zboost", "status"])
+                else:
+                    print(json.dumps(health, indent=2))
+                cls.post_action_message("zeroclean status")
+            elif choice in ("?", "h", "help"):
+                cls.show_explain()
+
+
+# =====================================================================
+# Main CLI Entrypoint
+# =====================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="ZeroClean — Smart, Safe & Didactic Linux System Hygiene and Memory Optimizer",
+        add_help=True
+    )
+    parser.add_argument("-n", "--dry-run", action="store_true", help="Simulate cleanup without making any changes")
+    parser.add_argument("-j", "--json", action="store_true", help="Emit output in JSON format")
+
+    subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
+    subparsers.add_parser("status", help="Show real-time memory and system health telemetry")
+    subparsers.add_parser("partial", aliases=["light"], help="Safe user cleanup without sudo (temps + memory)")
+    subparsers.add_parser("full", aliases=["deep"], help="Full deep system cleanup (requires sudo)")
+    subparsers.add_parser("packages", help="Purge package manager caches and orphan runtimes")
+    subparsers.add_parser("containers", help="Prune stopped containers and dangling images")
+    subparsers.add_parser("explain", help="Display didactic explanation of all metrics and actions")
+    subparsers.add_parser("auto", help="Automated run (intended for cron or systemd timers)")
+
+    args, unknown = parser.parse_known_args()
+
+    # Dry-run flag directly
+    if args.dry_run and not args.subcommand:
+        ZeroCleanCLI.print_interactive_banner("Safe Simulation (Dry-Run)", "zeroclean -n")
+        health = HealthEvaluator.evaluate()
+        if health["has_zboost"]:
+            subprocess.call(["zboost", "boost", "-n"])
+        else:
+            count, bytes_f = SystemHygiene.clean_user_temps(dry_run=True)
+            print(f"Simulation: would remove {count} expired files ({bytes_f / (1024*1024):.2f} MiB).")
+        return
+
+    # If no subcommand, open interactive didactic menu
+    if not args.subcommand:
+        ZeroCleanCLI.interactive_menu()
+        return
+
+    # Subcommand dispatch
+    if args.subcommand == "status":
+        health = HealthEvaluator.evaluate()
+        if args.json:
+            print(json.dumps(health, indent=2))
+        else:
+            if health["has_zboost"]:
+                subprocess.call(["zboost", "status"])
+            else:
+                print(f"Health: {health['badge']}")
+                print(f"Memory: {health['avail_pct']} free ({health['avail_gb']})")
+                print(f"Uptime: {health['uptime']}")
+
+    elif args.subcommand in ("partial", "light"):
+        health = HealthEvaluator.evaluate()
+        if health["has_zboost"]:
+            subprocess.call("zboost disk && zboost ram", shell=True)
+        else:
+            count, bytes_f = SystemHygiene.clean_user_temps(dry_run=False)
+            print(f"Cleaned {count} files ({bytes_f / (1024*1024):.2f} MiB freed).")
+        HealthEvaluator.mark_run()
+
+    elif args.subcommand in ("full", "deep"):
+        health = HealthEvaluator.evaluate()
+        if health["has_zboost"]:
+            subprocess.call(["sudo", "zboost", "boost"])
+        else:
+            pkg_mgrs = SystemHygiene.get_package_managers()
+            cmd = " && ".join(pkg_mgrs.values())
+            subprocess.call(cmd, shell=True)
+            subprocess.call(["sudo", "journalctl", "--vacuum-time=7d"])
+            SystemHygiene.clean_user_temps(dry_run=False)
+        HealthEvaluator.mark_run()
+
+    elif args.subcommand == "packages":
+        pkg_mgrs = SystemHygiene.get_package_managers()
+        cmd = " && ".join(pkg_mgrs.values())
+        subprocess.call(cmd, shell=True)
+
+    elif args.subcommand == "containers":
+        cmd = "podman system prune -f 2>/dev/null || docker system prune -f 2>/dev/null || true"
+        subprocess.call(cmd, shell=True)
+
+    elif args.subcommand == "explain":
+        ZeroCleanCLI.show_explain()
+
+    elif args.subcommand == "auto":
+        # Automated background run for systemd timer
+        health = HealthEvaluator.evaluate()
+        if health["level"] != "GREEN":
+            if health["has_zboost"]:
+                subprocess.call(["zboost", "auto"])
+            else:
+                SystemHygiene.clean_user_temps(dry_run=False)
+            HealthEvaluator.mark_run()
+
+if __name__ == "__main__":
+    main()

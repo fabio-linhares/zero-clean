@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeroclean"
+version = "1.0.0"
+authors = [
+  { name="Fábio Linhares", email="fabio.linhares@gmail.com" },
+]
+description = "Smart, safe and didactic Linux system hygiene and memory optimizer."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "rich>=12.0.0",
+]
+
+[project.scripts]
+zeroclean = "bin.zeroclean:main"
+zclean = "bin.zeroclean:main"
+
+[project.urls]
+"Homepage" = "https://github.com/fabio-linhares/zero-clean"
+"Bug Tracker" = "https://github.com/fabio-linhares/zero-clean/issues"

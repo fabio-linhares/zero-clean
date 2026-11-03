@@ -1,0 +1,13 @@
+[Unit]
+Description=ZeroClean — Automated Background System Hygiene Sentinel
+Documentation=https://github.com/fabio-linhares/zero-clean
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/zeroclean auto
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=other
+StandardOutput=journal
+StandardError=journal
