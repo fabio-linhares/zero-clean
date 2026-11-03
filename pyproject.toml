@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "zeroclean"
 version = "1.0.0"
 authors = [
-  { name="Fábio Linhares", email="fabio.linhares@gmail.com" },
+  { name="Fábio Linhares", email="fabiolinharez@gmail.com" },
 ]
 description = "Smart, safe and didactic Linux system hygiene and memory optimizer."
 readme = "README.md"

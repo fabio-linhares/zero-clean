@@ -1,11 +1,60 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# =============================================================================
+# PROJETO      : ZeroClean
+# ARQUIVO      : zeroclean
+# DESCRIÇÃO    : Otimizador inteligente, seguro e didático de higiene de
+#                armazenamento e memória do sistema Linux com avaliação de
+#                necessidade em tempo real e pedagogia passiva.
+#
+# AUTOR        : Fábio Linhares
+# E-MAIL       : fabiolinharez@gmail.com
+# ORGANIZAÇÃO  : ZeroNexus Ecosystem
+# WEBSITE      : https://fabiolinhares.com.br/
+# REPOSITÓRIO  : https://github.com/fabio-linhares/zero-clean
+#
+# VERSÃO       : 1.0.0
+# STATUS       : Estável
+# CRIAÇÃO      : 2026-11-03
+# ATUALIZAÇÃO  : 2026-11-03
+# PYTHON       : >= 3.8
+# PLATAFORMA   : GNU/Linux
+#
+# DEPENDÊNCIAS : Python Standard Library (opcional: rich >= 12.0)
+# INSTALAÇÃO   : ./install.sh ou pip install .
+# EXECUÇÃO     : zeroclean [status|partial|full|packages|containers|explain|-n]
+#
+# LICENÇA      : MIT
+# COPYRIGHT    : (c) 2026 Fábio Linhares
+# SPDX-License-Identifier: MIT
+#
+# HISTÓRICO
+# -----------------------------------------------------------------------------
+# 1.0.0 | 2026-11-03 | Fábio Linhares
+#       | Implementação inicial com avaliação de necessidade, pedagogia
+#       | passiva e travessia segura de descritores de arquivos abertos.
+#
+# OBSERVAÇÕES
+# -----------------------------------------------------------------------------
+# - Consulte README.md para documentação geral e guias de uso.
+# - Não armazene credenciais ou informações sensíveis neste arquivo.
+# =============================================================================
 """
 ZeroClean — Smart, Safe & Didactic Linux System Hygiene and Memory Optimizer.
 Part of the Zero ecosystem.
 
-License: MIT
-Author: Fábio Linhares & Contributors
+Examples:
+    $ zeroclean
+    $ zeroclean -n
+    $ zeroclean partial
+    $ sudo zeroclean full
 """
+
+__author__ = "Fábio Linhares"
+__email__ = "fabiolinharez@gmail.com"
+__version__ = "1.0.0"
+__license__ = "MIT"
+__status__ = "Stable"
 
 import sys
 import os

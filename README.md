@@ -148,6 +148,15 @@ O **ZeroClean** é uma ferramenta de higiene e otimização de sistema Linux mod
 
 ---
 
+## 👤 Author & Contact
+
+* **Author:** Fábio Linhares
+* **Website:** [https://fabiolinhares.com.br/](https://fabiolinhares.com.br/)
+* **Email:** [fabiolinharez@gmail.com](mailto:fabiolinharez@gmail.com)
+* **Standards:** Codebase headers adhere to the [ZeroNexus Header Standard](docs/PADRAO_CABECALHOS_CODIGO_FONTE.md).
+
+---
+
 ## 📄 License
 
 Distributed under the [MIT License](LICENSE). Copyright (c) 2026 Fábio Linhares.

@@ -1,9 +1,44 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# ZeroClean Installer
-# Installs zeroclean executable and sets up user symlink & systemd sentinel
-# ==============================================================================
-set -euo pipefail
+# =============================================================================
+# PROJETO      : ZeroClean
+# ARQUIVO      : install.sh
+# DESCRIÇÃO    : Script de instalação e configuração do ZeroClean e da
+#                sentinela autônoma periódica em systemd --user.
+#
+# AUTOR        : Fábio Linhares
+# E-MAIL       : fabiolinharez@gmail.com
+# ORGANIZAÇÃO  : ZeroNexus Ecosystem
+# WEBSITE      : https://fabiolinhares.com.br/
+# REPOSITÓRIO  : https://github.com/fabio-linhares/zero-clean
+#
+# VERSÃO       : 1.0.0
+# STATUS       : Estável
+# CRIAÇÃO      : 2026-11-03
+# ATUALIZAÇÃO  : 2026-11-03
+# INTERPRETADOR: Bash >= 5.0
+# PLATAFORMA   : GNU/Linux
+#
+# DEPENDÊNCIAS : bash, coreutils, systemd (opcional para timer)
+# EXECUÇÃO     : bash install.sh ou ./install.sh
+# PERMISSÕES   : chmod +x install.sh
+#
+# LICENÇA      : MIT
+# COPYRIGHT    : (c) 2026 Fábio Linhares
+# SPDX-License-Identifier: MIT
+#
+# HISTÓRICO
+# -----------------------------------------------------------------------------
+# 1.0.0 | 2026-11-03 | Fábio Linhares
+#       | Implementação inicial do instalador e configuração da sentinela.
+#
+# OBSERVAÇÕES
+# -----------------------------------------------------------------------------
+# - Não requer privilégios de root para instalação em ~/.local/bin.
+# - Validar permissões e PATH do usuário após a execução.
+# - Consultar README.md para instruções adicionais.
+# =============================================================================
+
+set -Eeuo pipefail
 
 DEST_DIR="${HOME}/.local/bin"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
